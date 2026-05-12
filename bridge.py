@@ -13,12 +13,14 @@ import email
 import logging
 import sys
 import signal
+from collections import defaultdict
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.header import decode_header
 from email.utils import formataddr
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional, Dict, List
 
 try:
     import requests
@@ -28,7 +30,7 @@ except ImportError:
 
 # ── Load Config ────────────────────────────────────────────────
 
-def load_config(path: str = "config.json") -> dict:
+def load_config(path="config.json"):
     p = Path(path)
     if not p.exists():
         print(f"找不到 {path}，请复制 config.example.json 为 config.json 并填写配置")
@@ -54,20 +56,18 @@ logging.basicConfig(
 )
 log = logging.getLogger("bridge")
 
-# ── Rate Limiting ──────────────────────────────────────────────
+# ── State & Rate Limiting ─────────────────────────────────────
 
-from collections import defaultdict
-
-seen_uids: set = set()
+seen_uids = set()
 running = True
 
-# {sender: [timestamp, timestamp, ...]}
-_sender_history: dict[str, list[float]] = defaultdict(list)
+_sender_history = defaultdict(list)   # {sender: [timestamp, ...]}
 _daily_count = 0
-_daily_reset: float = 0.0
+_daily_reset = 0.0
 
 
-def _check_rate_limit(sender: str) -> str | None:
+def _check_rate_limit(sender):
+    # type: (str) -> Optional[str]
     """Returns reason string if blocked, None if OK."""
     global _daily_count, _daily_reset
 
@@ -75,26 +75,26 @@ def _check_rate_limit(sender: str) -> str | None:
     daily_limit = BRIDGE_CFG.get("daily_limit", 50)
     sender_limit = BRIDGE_CFG.get("sender_hourly_limit", 5)
 
-    # reset daily counter
     if now - _daily_reset > 86400:
         _daily_count = 0
         _daily_reset = now
 
     if _daily_count >= daily_limit:
-        return f"今日已达 {daily_limit} 次上限"
+        return "今日已达 %d 次上限" % daily_limit
 
     cutoff = now - 3600
     _sender_history[sender] = [t for t in _sender_history[sender] if t > cutoff]
     if len(_sender_history[sender]) >= sender_limit:
-        return f"{sender} 一小时内已发 {sender_limit} 封"
+        return "%s 一小时内已发 %d 封" % (sender, sender_limit)
 
     return None
 
 
-def _record_call(sender: str):
+def _record_call(sender):
     global _daily_count
     _daily_count += 1
     _sender_history[sender].append(time.time())
+
 
 def graceful_exit(sig, frame):
     global running
@@ -104,8 +104,9 @@ def graceful_exit(sig, frame):
 signal.signal(signal.SIGINT, graceful_exit)
 signal.signal(signal.SIGTERM, graceful_exit)
 
+# ── Email Helpers ─────────────────────────────────────────────
 
-def decode_header_value(value: str) -> str:
+def decode_header_value(value):
     if not value:
         return ""
     parts = decode_header(value)
@@ -118,7 +119,7 @@ def decode_header_value(value: str) -> str:
     return "".join(decoded)
 
 
-def get_body(msg: email.message.Message) -> str:
+def get_body(msg):
     if msg.is_multipart():
         for part in msg.walk():
             ct = part.get_content_type()
@@ -134,7 +135,7 @@ def get_body(msg: email.message.Message) -> str:
     return ""
 
 
-def extract_email_addr(from_header: str) -> str:
+def extract_email_addr(from_header):
     """Extract bare email from 'Name <addr>' format."""
     if "<" in from_header and ">" in from_header:
         return from_header.split("<")[1].split(">")[0].strip()
@@ -143,13 +144,13 @@ def extract_email_addr(from_header: str) -> str:
 
 # ── IMAP ───────────────────────────────────────────────────────
 
-def connect_imap() -> imaplib.IMAP4_SSL:
+def connect_imap():
     conn = imaplib.IMAP4_SSL(EMAIL_CFG["imap_host"], EMAIL_CFG.get("imap_port", 993))
     conn.login(EMAIL_CFG["address"], EMAIL_CFG["password"])
     return conn
 
 
-def fetch_unseen() -> list[dict]:
+def fetch_unseen():
     """Fetch all unseen emails, return list of {uid, from, subject, body}."""
     try:
         conn = connect_imap()
@@ -169,7 +170,8 @@ def fetch_unseen() -> list[dict]:
             if uid_str in seen_uids:
                 continue
 
-            status, msg_data = conn.uid("fetch", uid, "(BODY[])")
+            # BODY.PEEK[] = read without marking as \Seen
+            status, msg_data = conn.uid("fetch", uid, "(BODY.PEEK[])")
             if status != "OK":
                 continue
 
@@ -187,9 +189,8 @@ def fetch_unseen() -> list[dict]:
 
             # allowlist check
             if allowed and from_addr not in allowed:
-                log.info(f"跳过未授权发件人: {from_addr}")
+                log.info("跳过未授权发件人: %s", from_addr)
                 seen_uids.add(uid_str)
-                # mark as seen
                 conn.uid("store", uid, "+FLAGS", "\\Seen")
                 continue
 
@@ -208,21 +209,21 @@ def fetch_unseen() -> list[dict]:
         conn.logout()
         return results
     except Exception as e:
-        log.error(f"IMAP 错误: {e}")
+        log.error("IMAP 错误: %s", e)
         return []
 
 
 # ── API Call ───────────────────────────────────────────────────
 
-def call_api(sender: str, subject: str, body: str) -> str:
+def call_api(sender, subject, body):
     """Call OpenAI-compatible API and return response text."""
     url = API_CFG["base_url"].rstrip("/") + "/chat/completions"
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {API_CFG['api_key']}",
+        "Authorization": "Bearer " + API_CFG["api_key"],
     }
 
-    user_content = f"来自: {sender}\n主题: {subject}\n\n{body}"
+    user_content = "来自: %s\n主题: %s\n\n%s" % (sender, subject, body)
 
     payload = {
         "model": API_CFG["model"],
@@ -239,20 +240,41 @@ def call_api(sender: str, subject: str, body: str) -> str:
         data = resp.json()
         return data["choices"][0]["message"]["content"]
     except Exception as e:
-        log.error(f"API 错误: {e}")
+        log.error("API 错误: %s", e)
         return ""
 
 
 # ── SMTP ───────────────────────────────────────────────────────
 
-def send_reply(to_addr: str, subject: str, body: str):
+def _save_to_imap_folder(msg_bytes, folder_names, flags="\\Seen"):
+    """Try to save email to one of the given IMAP folder names (best-effort)."""
+    try:
+        imap = imaplib.IMAP4_SSL(EMAIL_CFG["imap_host"])
+        imap.login(EMAIL_CFG["address"], EMAIL_CFG["password"])
+        for folder in folder_names:
+            try:
+                imap.select(folder)
+                imap.append(
+                    folder, flags,
+                    imaplib.Time2Internaldate(datetime.now(timezone.utc)),
+                    msg_bytes,
+                )
+                break
+            except Exception:
+                continue
+        imap.logout()
+    except Exception:
+        pass
+
+
+def send_reply(to_addr, subject, body):
     """Send reply via SMTP."""
     try:
         msg = MIMEMultipart()
         display_name = EMAIL_CFG.get("display_name", "Claude")
         msg["From"] = formataddr((display_name, EMAIL_CFG["address"]))
         msg["To"] = to_addr
-        msg["Subject"] = f"Re: {subject}" if not subject.startswith("Re:") else subject
+        msg["Subject"] = ("Re: " + subject) if not subject.startswith("Re:") else subject
         msg.attach(MIMEText(body, "plain", "utf-8"))
 
         with smtplib.SMTP(EMAIL_CFG["smtp_host"], EMAIL_CFG.get("smtp_port", 587)) as server:
@@ -262,58 +284,39 @@ def send_reply(to_addr: str, subject: str, body: str):
             server.login(EMAIL_CFG["address"], EMAIL_CFG["password"])
             server.sendmail(EMAIL_CFG["address"], [to_addr], msg.as_string())
 
-        # save to Sent
-        try:
-            imap = imaplib.IMAP4_SSL(EMAIL_CFG["imap_host"])
-            imap.login(EMAIL_CFG["address"], EMAIL_CFG["password"])
-            imap.select('"Sent Messages"')
-            imap.append(
-                '"Sent Messages"',
-                "\\Seen",
-                imaplib.Time2Internaldate(datetime.now(timezone.utc)),
-                msg.as_bytes(),
-            )
-            imap.logout()
-        except Exception:
-            pass  # sent folder save is best-effort
-
-        log.info(f"已回复 {to_addr}: {subject}")
+        _save_to_imap_folder(
+            msg.as_bytes(),
+            ['"Sent Messages"', '"Sent"', '"已发送"', '"[Gmail]/Sent Mail"'],
+            "\\Seen",
+        )
+        log.info("✅ 已回复 %s: %s", to_addr, subject)
     except Exception as e:
-        log.error(f"SMTP 错误: {e}")
+        log.error("SMTP 错误: %s", e)
 
 
-
-def save_draft(to_addr: str, subject: str, body: str):
-    """Save AI reply as draft in mailbox, owner reviews and sends manually."""
+def save_draft(to_addr, subject, body):
+    """Save AI reply as draft, owner reviews and sends manually."""
     try:
         msg = MIMEMultipart()
         display_name = EMAIL_CFG.get("display_name", "Claude")
         msg["From"] = formataddr((display_name, EMAIL_CFG["address"]))
         msg["To"] = to_addr
-        msg["Subject"] = f"Re: {subject}" if not subject.startswith("Re:") else subject
+        msg["Subject"] = ("Re: " + subject) if not subject.startswith("Re:") else subject
         msg.attach(MIMEText(body, "plain", "utf-8"))
 
-        imap = imaplib.IMAP4_SSL(EMAIL_CFG["imap_host"])
-        imap.login(EMAIL_CFG["address"], EMAIL_CFG["password"])
-        # try common draft folder names
-        for folder in ['"Drafts"', '"Draft"', '"草稿"', '"INBOX.Drafts"']:
-            try:
-                imap.select(folder)
-                imap.append(
-                    folder, "",
-                    imaplib.Time2Internaldate(datetime.now(timezone.utc)),
-                    msg.as_bytes(),
-                )
-                log.info(f"📝 草稿已保存: → {to_addr}")
-                break
-            except Exception:
-                continue
-        imap.logout()
+        _save_to_imap_folder(
+            msg.as_bytes(),
+            ['"Drafts"', '"Draft"', '"草稿"', '"INBOX.Drafts"', '"[Gmail]/Drafts"'],
+            "\\Draft",
+        )
+        log.info("📝 草稿已保存: → %s", to_addr)
     except Exception as e:
-        log.error(f"保存草稿失败: {e}")
+        log.error("保存草稿失败: %s", e)
 
 
-def notify_owner(sender: str, subject: str, body: str = "", event: str = "new_mail"):
+# ── Notifications ─────────────────────────────────────────────
+
+def notify_owner(sender, subject, body="", event="new_mail"):
     """Notify owner via webhook. Supports ntfy / Bark / pushover etc.
     event: 'new_mail' | 'draft_saved' | 'auto_sent'
     """
@@ -321,20 +324,17 @@ def notify_owner(sender: str, subject: str, body: str = "", event: str = "new_ma
     if not webhook:
         return
     try:
-        tags = {"new_mail": "📨", "draft_saved": "📝", "auto_sent": "✅"}
-        tag = tags.get(event, "📬")
-
         if event == "new_mail":
-            title = f"{tag} 收到邮件: {sender}"
+            title = "📨 收到邮件: " + sender
             preview = body[:200] + ("..." if len(body) > 200 else "")
-            message = f"主题: {subject}\n\n{preview}"
+            message = "主题: %s\n\n%s" % (subject, preview)
         elif event == "draft_saved":
-            title = f"{tag} 草稿已生成: Re: {subject}"
+            title = "📝 草稿已生成: Re: " + subject
             preview = body[:200] + ("..." if len(body) > 200 else "")
-            message = f"回复 {sender} 的草稿已保存，请去邮箱审核后发送。\n\n{preview}"
-        else:  # auto_sent
-            title = f"{tag} 已自动回复: {sender}"
-            message = f"主题: {subject}"
+            message = "回复 %s 的草稿已保存，请去邮箱审核后发送。\n\n%s" % (sender, preview)
+        else:
+            title = "✅ 已自动回复: " + sender
+            message = "主题: " + subject
 
         requests.post(
             webhook,
@@ -342,27 +342,38 @@ def notify_owner(sender: str, subject: str, body: str = "", event: str = "new_ma
             headers={"Title": title, "Tags": "email"},
             timeout=10,
         )
-        log.info(f"📱 已通知主人 ({event})")
+        log.info("📱 已通知主人 (%s)", event)
     except Exception as e:
-        log.warning(f"通知发送失败: {e}")
+        log.warning("通知发送失败: %s", e)
 
 
 # ── Main Loop ──────────────────────────────────────────────────
 
 def main():
     interval = BRIDGE_CFG.get("poll_interval", 10)
-    log.info(f"🚀 claude-mail-bridge 启动")
-    log.info(f"   邮箱: {EMAIL_CFG['address']}")
-    log.info(f"   模型: {API_CFG['model']}")
-    log.info(f"   轮询间隔: {interval}s")
+    auto_send = BRIDGE_CFG.get("auto_send", False)
+    daily_limit = BRIDGE_CFG.get("daily_limit", 50)
+
+    log.info("🚀 claude-mail-bridge 启动")
+    log.info("   邮箱: %s", EMAIL_CFG["address"])
+    log.info("   模型: %s", API_CFG["model"])
+    log.info("   模式: %s", "自动发送" if auto_send else "草稿审核（需手动发送）")
+    log.info("   每日上限: %d 次", daily_limit)
+    log.info("   轮询间隔: %ds", interval)
 
     allowed = BRIDGE_CFG.get("allowed_senders", [])
     if allowed:
-        log.info(f"   白名单: {allowed}")
+        log.info("   白名单: %s", allowed)
     else:
-        log.info(f"   白名单: 无限制（所有人可发）")
+        log.info("   白名单: 无限制（所有人可发）")
 
-    # init: mark all current emails as seen so we don't reply to old mail
+    webhook = BRIDGE_CFG.get("notify_webhook")
+    if webhook:
+        log.info("   通知: %s", webhook[:40] + "...")
+    else:
+        log.info("   通知: 未设置（仅日志记录）")
+
+    # init: mark existing emails so we don't reply to old mail
     try:
         conn = connect_imap()
         conn.select("INBOX")
@@ -371,27 +382,27 @@ def main():
             for uid in data[0].split():
                 seen_uids.add(uid.decode())
         conn.logout()
-        log.info(f"   已标记 {len(seen_uids)} 封历史邮件")
+        log.info("   已标记 %d 封历史邮件", len(seen_uids))
     except Exception as e:
-        log.warning(f"初始化标记失败: {e}")
+        log.warning("初始化标记失败: %s", e)
 
     while running:
         emails = fetch_unseen()
         for mail in emails:
-            log.info(f"📨 收到邮件: {mail['from']} - {mail['subject']}")
+            log.info("📨 收到邮件: %s - %s", mail["from"], mail["subject"])
             notify_owner(mail["from"], mail["subject"], mail["body"], "new_mail")
 
             blocked = _check_rate_limit(mail["from_addr"])
             if blocked:
-                log.warning(f"⚠️ 限流: {blocked}，跳过")
+                log.warning("⚠️ 限流: %s，跳过", blocked)
                 continue
+
             reply = call_api(mail["from"], mail["subject"], mail["body"])
             if not reply:
-                log.warning(f"API 无回复，跳过")
+                log.warning("API 无回复，跳过")
                 continue
 
             _record_call(mail["from_addr"])
-            auto_send = BRIDGE_CFG.get("auto_send", False)
 
             if auto_send:
                 send_reply(mail["from_addr"], mail["subject"], reply)
@@ -399,6 +410,7 @@ def main():
             else:
                 save_draft(mail["from_addr"], mail["subject"], reply)
                 notify_owner(mail["from"], mail["subject"], reply, "draft_saved")
+
         time.sleep(interval)
 
     log.info("👋 bridge 已停止")

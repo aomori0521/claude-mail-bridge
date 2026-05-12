@@ -146,7 +146,7 @@ async def mail_read(params: ReadInput) -> str:
     try:
         conn = _imap()
         conn.select(params.folder, readonly=True)
-        st, md = conn.uid("fetch", params.uid, "(BODY[])")
+        st, md = conn.uid("fetch", params.uid, "(BODY.PEEK[])")
         conn.logout()
         if st != "OK":
             return "错误: 邮件不存在"
