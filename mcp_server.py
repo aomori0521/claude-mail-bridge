@@ -51,7 +51,10 @@ EMAIL = CFG["email"]
 
 # ── MCP Server ─────────────────────────────────────────────────
 
-mcp = FastMCP("mail_bridge")
+# host="0.0.0.0" 让云平台（Zeabur/Railway/Render）能正确代理请求
+# 本地跑也不影响
+_port = int(os.environ.get("PORT", "8877"))
+mcp = FastMCP("mail_bridge", host="0.0.0.0", port=_port)
 
 # ── Helpers ────────────────────────────────────────────────────
 
@@ -273,7 +276,12 @@ async def mail_folders() -> str:
 
 if __name__ == "__main__":
     import sys
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 8877
-    import uvicorn
-    app = mcp.streamable_http_app()
-    uvicorn.run(app, host="127.0.0.1", port=port)
+
+    # 默认 SSE 模式（云平台兼容性最好，端点在 /sse）
+    # 可选 streamable-http 模式（端点在 /mcp）
+    transport = os.environ.get("MCP_TRANSPORT", "sse")
+
+    if "--streamable-http" in sys.argv:
+        transport = "streamable-http"
+
+    mcp.run(transport=transport)

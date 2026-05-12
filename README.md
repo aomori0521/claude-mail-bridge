@@ -198,6 +198,39 @@ python mcp_server.py
 
 > ⚠️ 以上填的都是**授权码 / App 专用密码**，不是你的登录密码。授权码可以随时撤销，不影响正常登录。
 
+## 云部署（Zeabur / Railway / Render）
+
+如果你没有自己的服务器，可以部署到云平台。MCP 版特别适合这种方式。
+
+### Zeabur 部署
+
+1. Fork 本项目到你的 GitHub
+2. Zeabur 新建项目 → 从 GitHub 导入
+3. **重命名入口文件**：Zeabur 默认找 `main.py`，把 `mcp_server.py` 重命名为 `main.py`，或在 Zeabur 设置里指定启动命令：`python mcp_server.py`
+4. 在 Variables 面板添加环境变量：
+   - `MAIL_ADDRESS`：你的邮箱地址
+   - `MAIL_PASSWORD`：授权码
+   - `IMAP_HOST`：如 `imap.qq.com`
+   - `IMAP_PORT`：`993`
+   - `SMTP_HOST`：如 `smtp.qq.com`
+   - `SMTP_PORT`：`587`
+   - `DISPLAY_NAME`：AI 的显示名
+   - `PORT`：`8080`（Zeabur 默认）
+5. 部署完成后访问 `https://你的域名/sse`，看到 `event: endpoint` 就说明通了
+6. 去 claude.ai → 设置 → MCP → 添加连接，填 `https://你的域名/sse`
+
+### Railway / Render
+
+同样的流程，设置环境变量 + 启动命令 `python mcp_server.py`。
+
+### 常见问题
+
+**421 Misdirected Request**：旧版代码 `host` 默认是 `127.0.0.1`，云平台反向代理过来的请求会被 MCP SDK 的 DNS 保护拦截。最新代码已修复（`host="0.0.0.0"`）。
+
+**Not Found on /mcp**：最新代码默认使用 SSE 模式，端点在 `/sse`。如需 streamable-http 模式（端点 `/mcp`），设置环境变量 `MCP_TRANSPORT=streamable-http`。
+
+**自定义域名**：在云平台 Networking 里加 Custom Domain，DNS 添加对应记录（A 或 CNAME，看平台指示）。
+
 ## 安全建议
 
 - **设置白名单**：`allowed_senders` 填上信任的邮箱地址
