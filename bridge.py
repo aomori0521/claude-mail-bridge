@@ -282,6 +282,60 @@ def send_reply(to_addr: str, subject: str, body: str):
         log.error(f"SMTP 错误: {e}")
 
 
+
+def save_draft(to_addr: str, subject: str, body: str):
+    """Save AI reply as draft in mailbox, owner reviews and sends manually."""
+    try:
+        msg = MIMEMultipart()
+        display_name = EMAIL_CFG.get("display_name", "Claude")
+        msg["From"] = formataddr((display_name, EMAIL_CFG["address"]))
+        msg["To"] = to_addr
+        msg["Subject"] = f"Re: {subject}" if not subject.startswith("Re:") else subject
+        msg.attach(MIMEText(body, "plain", "utf-8"))
+
+        imap = imaplib.IMAP4_SSL(EMAIL_CFG["imap_host"])
+        imap.login(EMAIL_CFG["address"], EMAIL_CFG["password"])
+        # try common draft folder names
+        for folder in ['"Drafts"', '"Draft"', '"草稿"', '"INBOX.Drafts"']:
+            try:
+                imap.select(folder)
+                imap.append(
+                    folder, "",
+                    imaplib.Time2Internaldate(datetime.now(timezone.utc)),
+                    msg.as_bytes(),
+                )
+                log.info(f"📝 草稿已保存: → {to_addr}")
+                break
+            except Exception:
+                continue
+        imap.logout()
+    except Exception as e:
+        log.error(f"保存草稿失败: {e}")
+
+
+def notify_owner(sender: str, subject: str, reply: str):
+    """Notify owner about pending draft. Supports webhook (ntfy, bark, etc)."""
+    webhook = BRIDGE_CFG.get("notify_webhook")
+    if not webhook:
+        log.info(f"💡 提示: 设置 notify_webhook 可以收到手机推送")
+        return
+    try:
+        preview = reply[:200] + ("..." if len(reply) > 200 else "")
+        title = f"📬 {sender} → {subject}"
+        message = f"{preview}\n\n草稿已保存，请去邮箱查看并发送。"
+
+        # ntfy style (also works with bark, pushover etc)
+        requests.post(
+            webhook,
+            data=message.encode("utf-8"),
+            headers={"Title": title, "Tags": "email"},
+            timeout=10,
+        )
+        log.info(f"📱 已通知主人")
+    except Exception as e:
+        log.warning(f"通知发送失败: {e}")
+
+
 # ── Main Loop ──────────────────────────────────────────────────
 
 def main():
@@ -319,11 +373,18 @@ def main():
                 log.warning(f"⚠️ 限流: {blocked}，跳过")
                 continue
             reply = call_api(mail["from"], mail["subject"], mail["body"])
-            if reply:
-                _record_call(mail["from_addr"])
+            if not reply:
+                log.warning(f"API 无回复，跳过")
+                continue
+
+            _record_call(mail["from_addr"])
+            auto_send = BRIDGE_CFG.get("auto_send", False)
+
+            if auto_send:
                 send_reply(mail["from_addr"], mail["subject"], reply)
             else:
-                log.warning(f"API 无回复，跳过")
+                save_draft(mail["from_addr"], mail["subject"], reply)
+                notify_owner(mail["from"], mail["subject"], reply)
         time.sleep(interval)
 
     log.info("👋 bridge 已停止")

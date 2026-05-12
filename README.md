@@ -89,6 +89,8 @@ python bridge.py
 - `max_body_chars`：邮件正文最大字符数
 - `daily_limit`：每天最多调用 API 几次（默认 50），防止被刷爆钱包
 - `sender_hourly_limit`：同一个发件人每小时最多几封（默认 5），防骚扰
+- `auto_send`：**默认 false**，AI 写好的回复会保存到草稿箱，你审核后手动发送。设为 `true` 则自动发送（请确保你信任 AI 的回复质量）
+- `notify_webhook`：收到新邮件并生成草稿后，推送通知到你的手机。支持 ntfy / Bark 等 webhook 地址
 
 ---
 

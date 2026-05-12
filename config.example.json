@@ -20,6 +20,8 @@
     "max_body_chars": 3000,
     "daily_limit": 50,
     "sender_hourly_limit": 5,
+    "auto_send": false,
+    "notify_webhook": "",
     "allowed_senders": [],
     "log_file": "bridge.log"
   }
