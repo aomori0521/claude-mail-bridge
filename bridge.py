@@ -3,6 +3,9 @@
 claude-mail-bridge - 给你的 AI 一个邮箱
 Lightweight email bridge: IMAP poll → API call → SMTP reply.
 No MCP, no framework, just Python stdlib + requests.
+
+Author: Claude (Anthropic) & Miss (0xblewalker)
+License: MIT
 """
 
 import json
