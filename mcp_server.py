@@ -1,10 +1,6 @@
 #!/usr/bin/env python3
 """
 claude-mail-bridge MCP Server
-给你的 AI 一个邮箱——MCP 版。
-AI 可以主动收信、发信、搜索邮件。
-Author: Claude Opus 4.6 & its human
-License: MIT
 """
 import os
 import json
@@ -20,7 +16,7 @@ from typing import Optional
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, Field, ConfigDict
 from pathlib import Path
-# ── Load Config ────────────────────────────────────────────────
+
 def load_config() -> dict:
     if os.environ.get("MAIL_ADDRESS"):
         return {
@@ -42,10 +38,10 @@ def load_config() -> dict:
 
 CFG = load_config()
 EMAIL = CFG["email"]
-# ── MCP Server ─────────────────────────────────────────────────
+
 _port = int(os.environ.get("PORT", "8877"))
 mcp = FastMCP("mail_bridge", host="0.0.0.0", port=_port)
-# ── Helpers ────────────────────────────────────────────────────
+
 def _decode(value: str) -> str:
     if not value:
         return ""
@@ -102,7 +98,7 @@ def _summary(msg, uid: str) -> dict:
         "subject": _decode(msg.get("Subject", "")),
         "date": msg.get("Date", ""),
     }
-# ── Tools ──────────────────────────────────────────────────────
+
 class InboxInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     limit: int = Field(default=10, description="获取最近几封邮件", ge=1, le=50)
@@ -226,21 +222,6 @@ async def mail_send(params: SendInput) -> str:
             if params.cc:
                 recipients.extend([a.strip() for a in params.cc.split(",")])
             server.sendmail(EMAIL["address"], recipients, msg.as_string())
-        try:
-            imap = imaplib.IMAP4_SSL(EMAIL["imap_host"], EMAIL.get("imap_port", 993))
-            imap.login(EMAIL["address"], EMAIL["password"])
-            for folder in ['"Sent Messages"', '"Sent"', '"已发送"', '"[Gmail]/Sent Mail"']:
-                try:
-                    imap.select(folder)
-                    imap.append(folder, "\\Seen",
-                        imaplib.Time2Internaldate(datetime.now(timezone.utc)),
-                        msg.as_bytes())
-                    break
-                except Exception:
-                    continue
-            imap.logout()
-        except Exception:
-            pass
         return json.dumps({"status": "sent", "to": params.to, "subject": params.subject}, ensure_ascii=False)
     except Exception as e:
         return f"发送失败: {e}"
@@ -251,7 +232,7 @@ class DraftInput(BaseModel):
     subject: str = Field(..., description="主题")
     body: str = Field(..., description="正文（纯文本）")
     cc: Optional[str] = Field(default=None, description="抄送，逗号分隔")
-    in_reply_to: Optional[str] = Field(default=None, description="回复的邮件Message-ID，用于邮件线程关联")
+    in_reply_to: Optional[str] = Field(default=None, description="回复的邮件Message-ID")
 
 @mcp.tool(name="mail_draft")
 async def mail_draft(params: DraftInput) -> str:
@@ -269,10 +250,8 @@ async def mail_draft(params: DraftInput) -> str:
         msg.attach(MIMEText(params.body, "plain", "utf-8"))
         conn = imaplib.IMAP4_SSL(EMAIL["imap_host"], EMAIL.get("imap_port", 993))
         conn.login(EMAIL["address"], EMAIL["password"])
-        draft_folder = "[Gmail]/Drafts"
-        conn.select('"[Gmail]/Drafts"')
         conn.append(
-            '"[Gmail]/Drafts"',
+            '"[Gmail]/&Tgtm+DBN-"',
             "\\Draft",
             imaplib.Time2Internaldate(datetime.now(timezone.utc)),
             msg.as_bytes()
@@ -298,7 +277,7 @@ async def mail_folders() -> str:
         return json.dumps(result, ensure_ascii=False, indent=2)
     except Exception as e:
         return f"错误: {e}"
-# ── Entry ──────────────────────────────────────────────────────
+
 if __name__ == "__main__":
     import sys
     transport = os.environ.get("MCP_TRANSPORT", "sse")
