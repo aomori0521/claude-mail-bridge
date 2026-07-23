@@ -3,11 +3,9 @@
 claude-mail-bridge MCP Server
 给你的 AI 一个邮箱——MCP 版。
 AI 可以主动收信、发信、搜索邮件。
-
 Author: Claude Opus 4.6 & its human
 License: MIT
 """
-
 import os
 import json
 import imaplib
@@ -19,15 +17,11 @@ from email.header import decode_header
 from email.utils import formataddr
 from datetime import datetime, timezone
 from typing import Optional
-
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, Field, ConfigDict
 from pathlib import Path
-
 # ── Load Config ────────────────────────────────────────────────
-
 def load_config() -> dict:
-    # 优先环境变量，其次 config.json
     if os.environ.get("MAIL_ADDRESS"):
         return {
             "email": {
@@ -48,16 +42,10 @@ def load_config() -> dict:
 
 CFG = load_config()
 EMAIL = CFG["email"]
-
 # ── MCP Server ─────────────────────────────────────────────────
-
-# host="0.0.0.0" 让云平台（Zeabur/Railway/Render）能正确代理请求
-# 本地跑也不影响
 _port = int(os.environ.get("PORT", "8877"))
 mcp = FastMCP("mail_bridge", host="0.0.0.0", port=_port)
-
 # ── Helpers ────────────────────────────────────────────────────
-
 def _decode(value: str) -> str:
     if not value:
         return ""
@@ -69,7 +57,6 @@ def _decode(value: str) -> str:
         else:
             decoded.append(part)
     return "".join(decoded)
-
 
 def _get_body(msg: email.message.Message) -> str:
     if msg.is_multipart():
@@ -91,11 +78,7 @@ def _get_body(msg: email.message.Message) -> str:
             return payload.decode(msg.get_content_charset() or "utf-8", errors="replace")
     return ""
 
-
-
 def _send_imap_id(conn):
-    """163/126 等网易邮箱要求客户端先发 IMAP ID 命令自报身份，
-    否则 SELECT 会返回 "Unsafe Login"。对其他服务器无副作用，best-effort。"""
     try:
         if "ID" in getattr(conn, "capabilities", ()):
             imaplib.Commands.setdefault("ID", ("AUTH", "SELECTED"))
@@ -111,7 +94,6 @@ def _imap():
     _send_imap_id(conn)
     return conn
 
-
 def _summary(msg, uid: str) -> dict:
     return {
         "uid": uid,
@@ -120,10 +102,7 @@ def _summary(msg, uid: str) -> dict:
         "subject": _decode(msg.get("Subject", "")),
         "date": msg.get("Date", ""),
     }
-
-
 # ── Tools ──────────────────────────────────────────────────────
-
 class InboxInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     limit: int = Field(default=10, description="获取最近几封邮件", ge=1, le=50)
@@ -152,7 +131,6 @@ async def mail_inbox(params: InboxInput) -> str:
         return json.dumps(results, ensure_ascii=False, indent=2)
     except Exception as e:
         return f"错误: {e}"
-
 
 class ReadInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -185,7 +163,6 @@ async def mail_read(params: ReadInput) -> str:
     except Exception as e:
         return f"错误: {e}"
 
-
 class SearchInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     query: str = Field(..., description='IMAP 搜索条件，如 FROM "xxx" / SUBJECT "hello" / UNSEEN / SINCE 01-Jan-2025')
@@ -216,7 +193,6 @@ async def mail_search(params: SearchInput) -> str:
     except Exception as e:
         return f"错误: {e}"
 
-
 class SendInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     to: str = Field(..., description="收件人邮箱")
@@ -235,7 +211,6 @@ async def mail_send(params: SendInput) -> str:
         if params.cc:
             msg["Cc"] = params.cc
         msg.attach(MIMEText(params.body, "plain", "utf-8"))
-
         smtp_port = EMAIL.get("smtp_port", 587)
         if smtp_port == 465:
             smtp_cls = smtplib.SMTP_SSL
@@ -251,8 +226,6 @@ async def mail_send(params: SendInput) -> str:
             if params.cc:
                 recipients.extend([a.strip() for a in params.cc.split(",")])
             server.sendmail(EMAIL["address"], recipients, msg.as_string())
-
-        # 存到已发送（best-effort）
         try:
             imap = imaplib.IMAP4_SSL(EMAIL["imap_host"], EMAIL.get("imap_port", 993))
             imap.login(EMAIL["address"], EMAIL["password"])
@@ -268,11 +241,46 @@ async def mail_send(params: SendInput) -> str:
             imap.logout()
         except Exception:
             pass
-
         return json.dumps({"status": "sent", "to": params.to, "subject": params.subject}, ensure_ascii=False)
     except Exception as e:
         return f"发送失败: {e}"
 
+class DraftInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    to: str = Field(..., description="收件人邮箱")
+    subject: str = Field(..., description="主题")
+    body: str = Field(..., description="正文（纯文本）")
+    cc: Optional[str] = Field(default=None, description="抄送，逗号分隔")
+    in_reply_to: Optional[str] = Field(default=None, description="回复的邮件Message-ID，用于邮件线程关联")
+
+@mcp.tool(name="mail_draft")
+async def mail_draft(params: DraftInput) -> str:
+    """将邮件存入草稿箱，等待人工审核后发送。"""
+    try:
+        msg = MIMEMultipart()
+        msg["From"] = formataddr((EMAIL.get("display_name", "Claude"), EMAIL["address"]))
+        msg["To"] = params.to
+        msg["Subject"] = params.subject
+        if params.cc:
+            msg["Cc"] = params.cc
+        if params.in_reply_to:
+            msg["In-Reply-To"] = params.in_reply_to
+            msg["References"] = params.in_reply_to
+        msg.attach(MIMEText(params.body, "plain", "utf-8"))
+        conn = imaplib.IMAP4_SSL(EMAIL["imap_host"], EMAIL.get("imap_port", 993))
+        conn.login(EMAIL["address"], EMAIL["password"])
+        draft_folder = "[Gmail]/Drafts"
+        conn.select('"[Gmail]/Drafts"')
+        conn.append(
+            '"[Gmail]/Drafts"',
+            "\\Draft",
+            imaplib.Time2Internaldate(datetime.now(timezone.utc)),
+            msg.as_bytes()
+        )
+        conn.logout()
+        return json.dumps({"status": "draft_saved", "to": params.to, "subject": params.subject}, ensure_ascii=False)
+    except Exception as e:
+        return f"草稿保存失败: {e}"
 
 @mcp.tool(name="mail_folders")
 async def mail_folders() -> str:
@@ -290,18 +298,10 @@ async def mail_folders() -> str:
         return json.dumps(result, ensure_ascii=False, indent=2)
     except Exception as e:
         return f"错误: {e}"
-
-
 # ── Entry ──────────────────────────────────────────────────────
-
 if __name__ == "__main__":
     import sys
-
-    # 默认 SSE 模式（云平台兼容性最好，端点在 /sse）
-    # 可选 streamable-http 模式（端点在 /mcp）
     transport = os.environ.get("MCP_TRANSPORT", "sse")
-
     if "--streamable-http" in sys.argv:
         transport = "streamable-http"
-
     mcp.run(transport=transport)
