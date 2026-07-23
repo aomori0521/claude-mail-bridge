@@ -97,6 +97,7 @@ def _summary(msg, uid: str) -> dict:
         "to": _decode(msg.get("To", "")),
         "subject": _decode(msg.get("Subject", "")),
         "date": msg.get("Date", ""),
+        "message_id": msg.get("Message-ID", ""),
     }
 
 class InboxInput(BaseModel):
@@ -232,7 +233,7 @@ class DraftInput(BaseModel):
     subject: str = Field(..., description="主题")
     body: str = Field(..., description="正文（纯文本）")
     cc: Optional[str] = Field(default=None, description="抄送，逗号分隔")
-    in_reply_to: Optional[str] = Field(default=None, description="回复的邮件Message-ID")
+    in_reply_to: Optional[str] = Field(default=None, description="回复的邮件Message-ID，用于线程关联")
 
 @mcp.tool(name="mail_draft")
 async def mail_draft(params: DraftInput) -> str:
